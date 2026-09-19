@@ -28,7 +28,13 @@ class AdminController extends Controller
         return response()->json([
             'total_users' => User::count(),
             'total_shops' => Shop::count(),
-            'active_subscriptions' => ShopSubscription::where('status', 'active')->count(),
+            'active_subscriptions' => ShopSubscription::where('shop_subscriptions.status', 'active')
+                ->join('shops', 'shops.id', '=', 'shop_subscriptions.shop_id')
+                ->where(function ($query) {
+                    $query->where('shops.account_status', '!=', 'suspended')
+                          ->orWhereNull('shops.account_status');
+                })
+                ->count(),
             'pending_verifications' => Shop::where('verification_status', 'pending')->count(),
             'pending_registrations' => ShopRegistration::where('status', 'pending')->count(),
             'notifications' => $pendingRegistrations->map(fn (ShopRegistration $registration) => [
@@ -47,23 +53,34 @@ class AdminController extends Controller
             'registrations' => ShopRegistration::where('status', 'pending')
                 ->latest()
                 ->get([
-                    'id', 'shop_name', 'first_name', 'middle_name', 'last_name',
+                    'id', 'shop_name', 'first_name', 'middle_name', 'last_name', 'birthday',
                     'email', 'contact_number', 'address', 'subscription_plan',
                     'billing_cycle', 'subscription_price', 'landmark_image_path',
-                    'proof_document_paths', 'created_at',
+                    'proof_document_paths',
+                    'dti_registration_path', 'tin_id_path', 'brgy_clearance_path',
+                    'government_id_path', 'government_id_type',
+                    'payment_method', 'payment_receipt_path',
+                    'created_at',
                 ])->map(function (ShopRegistration $registration) use ($request) {
+                    $base = $request->getSchemeAndHttpHost() . '/storage/';
+                    $url  = fn (?string $path) => $path ? $base . $path : null;
+
                     return [
                         ...$registration->toArray(),
-                        'landmark_image_url' => $registration->landmark_image_path
-                            ? $request->getSchemeAndHttpHost().'/storage/'.$registration->landmark_image_path
-                            : null,
-                        'proof_document_urls' => collect($registration->proof_document_paths ?? [])
-                            ->map(fn (string $path) => $request->getSchemeAndHttpHost().'/storage/'.$path)
+                        'landmark_image_url'    => $url($registration->landmark_image_path),
+                        'dti_registration_url'  => $url($registration->dti_registration_path),
+                        'tin_id_url'            => $url($registration->tin_id_path),
+                        'brgy_clearance_url'    => $url($registration->brgy_clearance_path),
+                        'government_id_url'     => $url($registration->government_id_path),
+                        'payment_receipt_url'   => $url($registration->payment_receipt_path),
+                        'proof_document_urls'   => collect($registration->proof_document_paths ?? [])
+                            ->map(fn (string $path) => $base . $path)
                             ->values(),
                     ];
                 })->values(),
         ]);
     }
+
 
     public function shopDirectory(Request $request)
     {
@@ -165,12 +182,17 @@ class AdminController extends Controller
             return response()->json(['message' => 'This registration has already been reviewed.'], 422);
         }
 
-        $result = DB::transaction(function () use ($request, $registration) {
+        // Generate password as lastname + MMDDYYYY
+        $lastName = strtolower(preg_replace('/[^a-zA-Z0-9]/', '', $registration->last_name));
+        $birthday = date('mdY', strtotime($registration->birthday));
+        $temporaryPassword = $lastName . $birthday;
+
+        $result = DB::transaction(function () use ($request, $registration, $temporaryPassword) {
             $owner = User::firstOrCreate(
                 ['email' => $registration->email],
                 [
                     'name' => trim("{$registration->first_name} {$registration->middle_name} {$registration->last_name}"),
-                    'password' => Str::random(40),
+                    'password' => $temporaryPassword,
                     'role' => 'shop_owner',
                 ]
             );
@@ -214,7 +236,17 @@ class AdminController extends Controller
             return $shop;
         });
 
-        return response()->json(['message' => 'Shop registration approved', 'shop_id' => $result->id]);
+        try {
+            \Illuminate\Support\Facades\Mail::to($registration->email)->send(new \App\Mail\ShopRegistrationApproved($registration, $temporaryPassword));
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send approval email: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'message' => 'Shop registration approved',
+            'shop_id' => $result->id,
+            'temporary_password' => $temporaryPassword,
+        ]);
     }
 
     public function rejectRegistration(Request $request, ShopRegistration $registration)
@@ -225,6 +257,12 @@ class AdminController extends Controller
             'status' => 'rejected',
             'rejection_reason' => $request->reason,
         ]);
+
+        try {
+            \Illuminate\Support\Facades\Mail::to($registration->email)->send(new \App\Mail\ShopRegistrationRejected($registration));
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send rejection email: ' . $e->getMessage());
+        }
 
         AuditLog::create([
             'user_id' => $request->user()->id,
@@ -290,6 +328,7 @@ class AdminController extends Controller
                 'shops.shop_name',
                 'shops.address',
                 'shops.visibility',
+                'shops.account_status',
                 'users.name as owner_name',
                 'subscription_plans.plan_name',
                 'subscription_plans.price',
@@ -309,7 +348,12 @@ class AdminController extends Controller
 
     public function subscriptionReport()
     {
-        $active = ShopSubscription::where('status', 'active');
+        $active = ShopSubscription::where('shop_subscriptions.status', 'active')
+            ->join('shops', 'shops.id', '=', 'shop_subscriptions.shop_id')
+            ->where(function ($query) {
+                $query->where('shops.account_status', '!=', 'suspended')
+                      ->orWhereNull('shops.account_status');
+            });
         $rangeStart = Carbon::now()->startOfMonth()->subMonths(5);
         $rangeEnd = Carbon::now()->endOfMonth();
         $monthly = ShopSubscription::whereBetween('start_date', [$rangeStart->toDateString(), $rangeEnd->toDateString()])
@@ -329,12 +373,29 @@ class AdminController extends Controller
             ];
         });
 
+        $shopsByPlan = ShopSubscription::join('subscription_plans', 'subscription_plans.id', '=', 'shop_subscriptions.plan_id')
+            ->join('shops', 'shops.id', '=', 'shop_subscriptions.shop_id')
+            ->join('users', 'users.id', '=', 'shops.owner_id')
+            ->select('subscription_plans.plan_name', 'shops.shop_name', 'users.email', 'users.name as owner_name', 'shop_subscriptions.billing_cycle')
+            ->get()
+            ->groupBy('plan_name');
+
         $byPlan = ShopSubscription::join('subscription_plans', 'subscription_plans.id', '=', 'shop_subscriptions.plan_id')
             ->selectRaw('subscription_plans.plan_name as plan, COUNT(*) as subscriptions, COALESCE(SUM(shop_subscriptions.amount), 0) as revenue')
             ->groupBy('subscription_plans.plan_name')
             ->orderBy('subscription_plans.id')
             ->get()
-            ->map(fn ($row) => ['plan' => $row->plan, 'subscriptions' => (int) $row->subscriptions, 'revenue' => (float) $row->revenue]);
+            ->map(fn ($row) => [
+                'plan' => $row->plan,
+                'subscriptions' => (int) $row->subscriptions,
+                'revenue' => (float) $row->revenue,
+                'shops' => $shopsByPlan->get($row->plan, collect())->map(fn($s) => [
+                    'shop_name' => $s->shop_name,
+                    'owner_name' => $s->owner_name,
+                    'email' => $s->email,
+                    'billing_cycle' => $s->billing_cycle
+                ])->values()
+            ]);
 
         $registrationCounts = ShopRegistration::select('status', DB::raw('COUNT(*) as total'))
             ->groupBy('status')

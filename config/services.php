@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'mailtrap' => [
+        'secret' => env('MAILTRAP_SECRET'),
+        'default_inbox' => env('MAILTRAP_INBOX_ID'),
+    ],
 ];

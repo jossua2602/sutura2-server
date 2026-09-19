@@ -10,7 +10,14 @@ class ShopBranchController extends Controller
 {
     public function index(Request $request)
     {
-        $query = ShopBranch::query()->with(['registration:id,shop_name,email', 'shop:id,shop_name']);
+        $query = ShopBranch::query()->with(['shop:id,shop_name']);
+
+        // Branch map validation is ONLY for additional branches added by Premium shop owners.
+        // Exclude any branch that was auto-created from a registration form
+        // (those have shop_registration_id set and are just the initial location).
+        $query->whereNull('shop_registration_id')
+              ->whereNotNull('shop_id');
+
         if ($request->filled('status')) {
             $query->where('status', $request->status);
         }

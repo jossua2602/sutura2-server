@@ -11,6 +11,7 @@ class ShopRegistration extends Model
         'first_name',
         'middle_name',
         'last_name',
+        'birthday',
         'email',
         'contact_number',
         'address',
@@ -19,6 +20,13 @@ class ShopRegistration extends Model
         'subscription_price',
         'landmark_image_path',
         'proof_document_paths',
+        'dti_registration_path',
+        'tin_id_path',
+        'brgy_clearance_path',
+        'government_id_path',
+        'government_id_type',
+        'payment_method',
+        'payment_receipt_path',
         'status',
         'rejection_reason',
     ];
@@ -27,7 +35,7 @@ class ShopRegistration extends Model
     {
         return [
             'proof_document_paths' => 'array',
-            'subscription_price' => 'decimal:2',
+            'subscription_price'   => 'decimal:2',
         ];
     }
 }
