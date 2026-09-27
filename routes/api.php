@@ -46,6 +46,7 @@ Route::middleware(['auth:sanctum', 'role:admin'])->prefix('admin')->group(functi
     Route::patch('/shops/{shop}/visibility', [AdminController::class, 'toggleShopVisibility']);
     Route::get('/shops/pending', [AdminController::class, 'pendingShops']);
     Route::get('/shops', [AdminController::class, 'shopDirectory']);
+    Route::get('/shops/{shop}/history', [AdminController::class, 'shopHistory']);
     Route::patch('/shops/{shop}/status', [AdminController::class, 'updateShopStatus']);
     Route::post('/shops/{shop}/approve', [AdminController::class, 'approveShop']);
     Route::post('/shops/{shop}/reject', [AdminController::class, 'rejectShop']);

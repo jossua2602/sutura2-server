@@ -97,6 +97,10 @@ class AdminController extends Controller
                 'users.name as owner_name', 'users.email as owner_email',
                 'subscription_plans.plan_name', 'shop_subscriptions.start_date',
                 'shop_subscriptions.end_date',
+                'shop_subscriptions.billing_cycle',
+                DB::raw('COALESCE(shop_subscriptions.amount, 0) as subscription_amount'),
+                DB::raw('0 as branch_count'),
+                DB::raw('0 as order_revenue'),
             ])
             ->orderByDesc('shops.created_at');
 
@@ -119,6 +123,30 @@ class AdminController extends Controller
         }
 
         return response()->json($query->get());
+    }
+
+    public function shopHistory(Shop $shop)
+    {
+        $subscriptions = ShopSubscription::where('shop_subscriptions.shop_id', $shop->id)
+            ->join('subscription_plans', 'subscription_plans.id', '=', 'shop_subscriptions.plan_id')
+            ->orderByDesc('shop_subscriptions.start_date')
+            ->get([
+                'shop_subscriptions.id',
+                'subscription_plans.plan_name',
+                'shop_subscriptions.billing_cycle',
+                'shop_subscriptions.amount',
+                'shop_subscriptions.start_date',
+                'shop_subscriptions.end_date',
+                'shop_subscriptions.status',
+                'shop_subscriptions.created_at',
+            ]);
+
+        return response()->json([
+            'shop_name'     => $shop->shop_name,
+            'subscriptions' => $subscriptions,
+            'order_revenue' => 0,
+            'branch_count'  => 0,
+        ]);
     }
 
     public function updateShopStatus(Request $request, Shop $shop)
@@ -275,7 +303,7 @@ class AdminController extends Controller
 
     public function auditLogs(Request $request)
     {
-        $query = AuditLog::with('user:id,name,email')->latest();
+        $query = AuditLog::with('user:id,name,email,role')->latest();
 
         if ($request->filled('search')) {
             $search = $request->string('search')->toString();
@@ -289,6 +317,11 @@ class AdminController extends Controller
         }
         if ($request->filled('action_type')) {
             $query->where('action_type', $request->action_type);
+        }
+        if ($request->filled('role')) {
+            $query->whereHas('user', function ($q) use ($request) {
+                $q->where('role', $request->role);
+            });
         }
         if ($request->filled('from')) {
             $query->whereDate('created_at', '>=', $request->from);
